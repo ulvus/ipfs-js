@@ -9,7 +9,8 @@ describe("block get", function () {
     const data = await Ipfs.get(
       "Qmd2V777o5XvJbYMeMb8k2nU5f8d3ciUQ5YpYuWhzv8iDj"
     );
-    console.log(ethers.utils.toUtf8String(data));
+    const regex = new RegExp("meeseek");
+    assert.ok(regex.test(ethers.utils.toUtf8String(data)), "meeseek not found");
     assert.ok(data.length > 0, "hash has length");
   });
 });
