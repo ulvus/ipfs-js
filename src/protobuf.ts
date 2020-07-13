@@ -3,6 +3,7 @@
 import { ethers } from "ethers";
 import { getUrl } from "./geturl";
 import { BaseX } from "@ethersproject/basex";
+import { Varint } from "./varint";
 
 const INFURA_IPFS_URL = "https://ipfs.infura.io:5001/api/v0/block/get?arg=";
 
@@ -128,23 +129,10 @@ export class ProtoBuf {
     let result: { [key: string]: any } = {};
     let offset = 0;
 
-    var readVarInt = function () {
-      var v = [data[offset] & 0x7f];
-      while (data[offset++] & 0x80) {
-        if (offset === data.length) {
-          throw new Error("buffer overrun");
-        }
-        v.unshift(data[offset] & 0x7f);
-      }
-      var result = 0;
-      v.forEach(function (v) {
-        result = result * 128 + v;
-      });
-      return result;
-    };
-
     while (offset < data.length) {
-      var v = readVarInt();
+      let varint = Varint.decode(data, offset);
+      const v = varint.value;
+      offset += varint.length;
       const tag = schema.names[(v >>> 3) - 1];
       if (!tag) {
         throw new Error("unknown field - " + v);
@@ -157,15 +145,19 @@ export class ProtoBuf {
       switch (v & 7) {
         // varint
         case WireType.Varint:
-          tempResult[tag].push(readVarInt());
+          varint = Varint.decode(data, offset);
+          tempResult[tag].push(varint.value);
+          offset += varint.length;
           break;
 
         // bytes
         case WireType.VarLength: {
-          var length = readVarInt();
+          varint = Varint.decode(data, offset);
+          const length = varint.value;
           if (offset + length > data.length) {
             throw new Error("buffer overrun");
           }
+          offset += varint.length;
 
           tempResult[tag].push(data.slice(offset, offset + length));
           offset += length;
