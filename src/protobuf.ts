@@ -5,7 +5,7 @@ import { getUrl } from "./geturl";
 import { BaseX } from "@ethersproject/basex";
 import { Varint } from "./varint";
 
-const INFURA_IPFS_URL = "https://ipfs.infura.io:5001/api/v0/block/get?arg=";
+const INFURA_IPFS_URL = "https://ipfs.infura.io:5001/api/v0/block";
 
 const base58 = new BaseX(
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -103,7 +103,7 @@ export class ProtoBuf {
    * get from ipfs by multihash
    */
   static get(multihash: string): Promise<Uint8Array> {
-    const url = INFURA_IPFS_URL + multihash;
+    const url = `${INFURA_IPFS_URL}/get?arg=${multihash}`;
 
     return getUrl(url).then((res) => {
       const hash = ethers.utils.sha256(res.body);
@@ -120,8 +120,34 @@ export class ProtoBuf {
   /*
    * put file ipfs
    */
-  static put(path: string): Promise<string> {
-    return Promise.resolve("TBD");
+  static put(data: Uint8Array): Promise<any> {
+    const url = `${INFURA_IPFS_URL}/put`;
+
+    // simple unixfs type
+    // varint of type file 2, data, filesize, blocksize
+    const type = Varint.encode((1 << 3) | 2);
+    //const length = Varint.encode(data.length);
+    const body = Buffer.concat([
+      Buffer.from(`--boundary 
+Content-Disposition: form-data;
+
+`),
+      Buffer.from(type),
+      Buffer.from(`--boundary--
+`),
+    ]);
+
+    const contentType = `multipart/form-data;boundary="boundary"`;
+    const options = {
+      method: "POST",
+      body,
+      headers: {
+        "Content-Type": contentType,
+      },
+    };
+    return getUrl(url, options).then((res) => {
+      return JSON.parse(ethers.utils.toUtf8String(res.body));
+    });
   }
 
   static parse(data: Uint8Array, schema: SchemaDefinition): any {
@@ -134,7 +160,9 @@ export class ProtoBuf {
       const v = varint.value;
       offset += varint.length;
       const tag = schema.names[(v >>> 3) - 1];
+
       if (!tag) {
+        console.log("data", data, ethers.utils.toUtf8String(data));
         throw new Error("unknown field - " + v);
       }
 

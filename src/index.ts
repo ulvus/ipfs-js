@@ -3,11 +3,13 @@
 import { ProtoBuf } from "./protobuf";
 
 export class Ipfs {
+  // get data from ipfs by multihash
   static get(multihash: string): Promise<Uint8Array> {
     return ProtoBuf.get(multihash);
   }
 
-  static put(path: string): Promise<string> {
-    return ProtoBuf.put(path);
+  // put data in ipfs and returns the multihash
+  static put(data: Uint8Array): Promise<string> {
+    return ProtoBuf.put(data);
   }
 }

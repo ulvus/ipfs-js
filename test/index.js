@@ -35,4 +35,18 @@ describe("block get", function () {
       assert.equal(decoded.value, num, `decoded varint should equal ${num}`);
     });
   });
+
+  it("put should work", async function () {
+    this.timeout(120000);
+
+    const data = Buffer.from("value1");
+    const cid = await Ipfs.put(data);
+    const expectedCID = ethers.utils.sha256(data);
+    //console.log("cid", cid, typeof cid, cid.Key);
+
+    const result = await Ipfs.get(cid.Key);
+    console.log("data ===>", "x");
+
+    assert.equal(cid, expectedCID, "CID mismatch");
+  });
 });
