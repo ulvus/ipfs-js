@@ -42,9 +42,9 @@ describe("IPFS", function () {
     });
   });
 
-  describe("Varint", function () {
+  describe("Varint encode and decode", function () {
     [300, 0, 4294967296].forEach((num) => {
-      it(`encode ${num}`, function () {
+      it(`for ${num}`, function () {
         const encoded = Varint.encode(num);
         const decoded = Varint.decode(encoded);
         assert.equal(decoded.value, num, `decoded varint should equal ${num}`);
@@ -72,7 +72,17 @@ describe("IPFS", function () {
   */
 
   describe("block put", function () {
-    it("block put should work", async function () {
+    it("small data", async function () {
+      this.timeout(120000);
+
+      const data = Buffer.from("abcd");
+      const cid = await Ipfs.put(data);
+
+      const savedData = await Ipfs.get(cid.Key);
+      assert.ok(savedData !== null, "failed to get from ipfs");
+    });
+
+    it("large data", async function () {
       this.timeout(120000);
 
       const data = Buffer.from("abcd");

@@ -4,7 +4,8 @@ import { ethers } from "ethers";
 import { getUrl } from "./geturl";
 import { BaseX } from "@ethersproject/basex";
 import { Varint } from "./varint";
-import { getBoundary } from "./boundary";
+import { Multihash } from "./multihash";
+import { FormData } from "./form-data";
 
 const INFURA_IPFS_URL = "https://ipfs.infura.io:5001/api/v0/block";
 
@@ -43,35 +44,24 @@ enum SchemaType {
 
 type SchemaDefinition = {
   names: Array<string>;
-  types: Array<number>;
   repeated?: { [key: string]: boolean };
 };
 
 const Schemas: { [name: string]: SchemaDefinition } = {
   [SchemaType.PBNODE]: {
     names: ["data", "links"],
-    types: [WireType.Varint, WireType.VarLength],
     repeated: { links: true },
   },
   [SchemaType.PBLINK]: {
     names: ["hash", "name", "tsize"],
-    types: [WireType.VarLength, WireType.VarLength, WireType.Varint],
   },
   [SchemaType.UNIXFS]: {
     names: ["type", "data", "filesize", "blocksize", "hashtype", "fanout"],
-    types: [
-      WireType.Varint,
-      WireType.VarLength,
-      WireType.Varint,
-      WireType.Varint,
-      WireType.Varint,
-      WireType.Varint,
-    ],
   },
 };
 
 class PBNode {
-  static encode(data?: Uint8Array): Uint8Array {
+  static encode(data?: Uint8Array, links?: Array<PBLink>): Uint8Array {
     const schema: SchemaDefinition = Schemas[SchemaType.PBNODE];
     const result: Array<Uint8Array> = [];
 
@@ -85,6 +75,13 @@ class PBNode {
       const size = Varint.encode(encodedData.byteLength);
       result.push(size);
       result.push(encodedData);
+    }
+
+    if (links) {
+      // tag, length of unixfs encoded data, unixfs encoded data
+      const tag = schema.names.findIndex((i) => i === "links") + 1;
+      const encodedTag = Varint.encode((tag << 3) + WireType.VarLength);
+      result.push(encodedTag);
     }
     return ethers.utils.concat(result);
   }
@@ -111,6 +108,11 @@ class PBNode {
 }
 
 class PBLink {
+  static encode(links: Array<PBLink>): Uint8Array {
+    const result: Array<Uint8Array> = [];
+
+    return ethers.utils.concat(result);
+  }
   static parse(data: Uint8Array): Promise<Uint8Array> {
     const schema: SchemaDefinition = Schemas[SchemaType.PBLINK];
     const result = ProtoBuf.parse(data, schema);
@@ -188,23 +190,25 @@ export class ProtoBuf {
    */
   static put(data: Uint8Array): Promise<any> {
     const url = `${INFURA_IPFS_URL}/put`;
+    const encoded = PBNode.encode(data);
+    const multihash = Multihash.encode(encoded);
+    const formData = new FormData(encoded);
 
-    const boundary = getBoundary();
-    let body = "";
-    body += "--" + boundary + "\r\n";
-    body += "Content-Type:application/octet-stream\r\n\r\n";
-    var payload = Buffer.concat([
-      Buffer.from(body, "utf8"),
-      Buffer.from(PBNode.encode(data)),
-      Buffer.from("\r\n--" + boundary + "--\r\n", "utf8"),
-    ]);
     const options = {
       method: "POST",
-      body: payload,
-      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary },
+      body: formData.payload,
+      headers: formData.headers,
     };
+
     return getUrl(url, options).then((res) => {
-      return JSON.parse(ethers.utils.toUtf8String(res.body));
+      const result = JSON.parse(ethers.utils.toUtf8String(res.body));
+      if (!result.Key || result.Key !== multihash) {
+        const actual = result.Key ? result.Key : "missing";
+        throw new Error(
+          `Multihash mismatch, expected ${multihash} got ${actual}`
+        );
+      }
+      return result;
     });
   }
 
