@@ -4,12 +4,23 @@ import { ethers } from "ethers";
 import { getUrl } from "./geturl";
 import { BaseX } from "@ethersproject/basex";
 import { Varint } from "./varint";
+import { getBoundary } from "./boundary";
 
 const INFURA_IPFS_URL = "https://ipfs.infura.io:5001/api/v0/block";
 
 const base58 = new BaseX(
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 );
+
+// UnixFs data type
+enum UnixFsType {
+  Raw = 0,
+  Directory = 1,
+  File = 2,
+  Metadata = 3,
+  Symlink = 4,
+  HAMTShard = 5,
+}
 
 // https://developers.google.com/protocol-buffers/docs/encoding
 enum WireType {
@@ -25,29 +36,59 @@ enum SchemaType {
 }
 
 // Protobuf definitions for merkledag node and links:
+// https://github.com/ipld/js-ipld-dag-pb/blob/master/src/dag.proto.js
 //    https://github.com/ipfs/go-merkledag/blob/master/pb/merkledag.proto
 // Protobuf defintions for unixfs:
 //    https://github.com/ipfs/go-unixfs/blob/master/pb/unixfs.proto
 
 type SchemaDefinition = {
   names: Array<string>;
+  types: Array<number>;
   repeated?: { [key: string]: boolean };
 };
 
 const Schemas: { [name: string]: SchemaDefinition } = {
   [SchemaType.PBNODE]: {
     names: ["data", "links"],
+    types: [WireType.Varint, WireType.VarLength],
     repeated: { links: true },
   },
   [SchemaType.PBLINK]: {
-    names: ["hash", "n", "ts"],
+    names: ["hash", "name", "tsize"],
+    types: [WireType.VarLength, WireType.VarLength, WireType.Varint],
   },
   [SchemaType.UNIXFS]: {
-    names: ["type", "data", "fs", "bs", "ht", "fo"],
+    names: ["type", "data", "filesize", "blocksize", "hashtype", "fanout"],
+    types: [
+      WireType.Varint,
+      WireType.VarLength,
+      WireType.Varint,
+      WireType.Varint,
+      WireType.Varint,
+      WireType.Varint,
+    ],
   },
 };
 
 class PBNode {
+  static encode(data?: Uint8Array): Uint8Array {
+    const schema: SchemaDefinition = Schemas[SchemaType.PBNODE];
+    const result: Array<Uint8Array> = [];
+
+    if (data) {
+      // tag, length of unixfs encoded data, unixfs encoded data
+      const tag = schema.names.findIndex((i) => i === "data") + 1;
+      const encodedTag = Varint.encode((tag << 3) + WireType.VarLength);
+      result.push(encodedTag);
+
+      const encodedData = PBData.encode(data);
+      const size = Varint.encode(encodedData.byteLength);
+      result.push(size);
+      result.push(encodedData);
+    }
+    return ethers.utils.concat(result);
+  }
+
   static parse(data: Uint8Array): Promise<Uint8Array> {
     const schema: SchemaDefinition = Schemas[SchemaType.PBNODE];
     const result = ProtoBuf.parse(data, schema);
@@ -81,11 +122,36 @@ class PBLink {
 }
 
 class PBData {
+  static encode(data: Uint8Array): Uint8Array {
+    const schema: SchemaDefinition = Schemas[SchemaType.UNIXFS];
+    const result: Array<Uint8Array> = [];
+
+    let tag = schema.names.findIndex((i) => i === "type") + 1;
+    let encodedTag = Varint.encode((tag << 3) + WireType.Varint);
+    const type = Varint.encode(UnixFsType.File);
+    result.push(encodedTag);
+    result.push(type);
+
+    tag = schema.names.findIndex((i) => i === "data") + 1;
+    encodedTag = Varint.encode((tag << 3) + WireType.VarLength);
+    const size = Varint.encode(data.byteLength);
+    result.push(encodedTag);
+    result.push(size);
+    result.push(data);
+
+    tag = schema.names.findIndex((i) => i === "filesize") + 1;
+    encodedTag = Varint.encode((tag << 3) + WireType.Varint);
+    result.push(encodedTag);
+    result.push(size);
+
+    return ethers.utils.concat(result);
+  }
+
   static parse(data: Uint8Array): Promise<Uint8Array> {
     const schema: SchemaDefinition = Schemas[SchemaType.UNIXFS];
     const result = ProtoBuf.parse(data, schema);
 
-    if (result.type !== 2) {
+    if (result.type !== UnixFsType.File) {
       throw new Error("unsupported type");
     }
     if (!result.data) {
@@ -123,27 +189,19 @@ export class ProtoBuf {
   static put(data: Uint8Array): Promise<any> {
     const url = `${INFURA_IPFS_URL}/put`;
 
-    // simple unixfs type
-    // varint of type file 2, data, filesize, blocksize
-    const type = Varint.encode((1 << 3) | 2);
-    //const length = Varint.encode(data.length);
-    const body = Buffer.concat([
-      Buffer.from(`--boundary 
-Content-Disposition: form-data;
-
-`),
-      Buffer.from(type),
-      Buffer.from(`--boundary--
-`),
+    const boundary = getBoundary();
+    let body = "";
+    body += "--" + boundary + "\r\n";
+    body += "Content-Type:application/octet-stream\r\n\r\n";
+    var payload = Buffer.concat([
+      Buffer.from(body, "utf8"),
+      Buffer.from(PBNode.encode(data)),
+      Buffer.from("\r\n--" + boundary + "--\r\n", "utf8"),
     ]);
-
-    const contentType = `multipart/form-data;boundary="boundary"`;
     const options = {
       method: "POST",
-      body,
-      headers: {
-        "Content-Type": contentType,
-      },
+      body: payload,
+      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary },
     };
     return getUrl(url, options).then((res) => {
       return JSON.parse(ethers.utils.toUtf8String(res.body));
