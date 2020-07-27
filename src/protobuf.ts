@@ -7,11 +7,14 @@ import { Varint } from "./varint";
 import { Multihash } from "./multihash";
 import { FormData } from "./form-data";
 
+//const CHUNK_SIZE = 2 ** 18;
 const INFURA_IPFS_URL = "https://ipfs.infura.io:5001/api/v0/block";
 
 const base58 = new BaseX(
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 );
+
+const CHUNK_SIZE = 2 ** 18;
 
 // UnixFs data type
 enum UnixFsType {
@@ -44,21 +47,36 @@ enum SchemaType {
 
 type SchemaDefinition = {
   names: Array<string>;
+  types: Array<number>;
   repeated?: { [key: string]: boolean };
 };
 
 const Schemas: { [name: string]: SchemaDefinition } = {
   [SchemaType.PBNODE]: {
     names: ["data", "links"],
+    types: [WireType.VarLength, WireType.VarLength],
     repeated: { links: true },
   },
   [SchemaType.PBLINK]: {
     names: ["hash", "name", "tsize"],
+    types: [WireType.VarLength, WireType.VarLength, WireType.Fixed64],
   },
   [SchemaType.UNIXFS]: {
     names: ["type", "data", "filesize", "blocksize", "hashtype", "fanout"],
+    types: [
+      WireType.Varint,
+      WireType.VarLength,
+      WireType.Fixed64,
+      WireType.Fixed64,
+      WireType.Fixed64,
+    ],
   },
 };
+
+function encodeTag(name: string, schema: SchemaDefinition): Uint8Array {
+  const tag = schema.names.findIndex((i) => i === name);
+  return Varint.encode(((tag + 1) << 3) + schema.types[tag]);
+}
 
 class PBNode {
   static encode(data?: Uint8Array, links?: Array<PBLink>): Uint8Array {
@@ -67,9 +85,7 @@ class PBNode {
 
     if (data) {
       // tag, length of unixfs encoded data, unixfs encoded data
-      const tag = schema.names.findIndex((i) => i === "data") + 1;
-      const encodedTag = Varint.encode((tag << 3) + WireType.VarLength);
-      result.push(encodedTag);
+      result.push(encodeTag("data", schema));
 
       const encodedData = PBData.encode(data);
       const size = Varint.encode(encodedData.byteLength);
@@ -78,10 +94,16 @@ class PBNode {
     }
 
     if (links) {
-      // tag, length of unixfs encoded data, unixfs encoded data
-      const tag = schema.names.findIndex((i) => i === "links") + 1;
-      const encodedTag = Varint.encode((tag << 3) + WireType.VarLength);
-      result.push(encodedTag);
+      const encodedLinks = ethers.utils.concat(
+        links.map((link) => {
+          return link.encode();
+        })
+      );
+
+      // tag, size, links
+      result.push(encodeTag("links", schema));
+      result.push(Varint.encode(encodedLinks.byteLength));
+      result.push(encodedLinks);
     }
     return ethers.utils.concat(result);
   }
@@ -89,8 +111,13 @@ class PBNode {
   static parse(data: Uint8Array): Promise<Uint8Array> {
     const schema: SchemaDefinition = Schemas[SchemaType.PBNODE];
     const result = ProtoBuf.parse(data, schema);
-
     if (result.links) {
+      if (result.data && result.data.constructor === Uint8Array) {
+        const parsed = PBData.parse(result.data);
+        if (parsed.byteLength > 0) {
+          throw new Error("Unexpected data");
+        }
+      }
       var promises: Array<Promise<Uint8Array>> = [];
       result.links.forEach(function (hash: Uint8Array) {
         promises.push(PBLink.parse(hash));
@@ -108,11 +135,32 @@ class PBNode {
 }
 
 class PBLink {
-  static encode(links: Array<PBLink>): Uint8Array {
+  hash: string;
+  filename: string;
+  tsize: number;
+
+  constructor(hash: string, filename: string, tsize: number) {
+    this.hash = hash;
+    this.filename = filename;
+    this.tsize = tsize;
+  }
+
+  encode(): Uint8Array {
+    const schema: SchemaDefinition = Schemas[SchemaType.PBLINK];
+
     const result: Array<Uint8Array> = [];
+    const hash = ethers.utils.toUtf8Bytes(this.hash);
+    const size = Varint.encode(this.tsize);
+    const length = Varint.encode(hash.byteLength);
+    result.push(encodeTag("hash", schema));
+    result.push(length);
+    result.push(hash);
+    result.push(encodeTag("tsize", schema));
+    result.push(size);
 
     return ethers.utils.concat(result);
   }
+
   static parse(data: Uint8Array): Promise<Uint8Array> {
     const schema: SchemaDefinition = Schemas[SchemaType.PBLINK];
     const result = ProtoBuf.parse(data, schema);
@@ -128,41 +176,35 @@ class PBData {
     const schema: SchemaDefinition = Schemas[SchemaType.UNIXFS];
     const result: Array<Uint8Array> = [];
 
-    let tag = schema.names.findIndex((i) => i === "type") + 1;
-    let encodedTag = Varint.encode((tag << 3) + WireType.Varint);
     const type = Varint.encode(UnixFsType.File);
-    result.push(encodedTag);
+    result.push(encodeTag("type", schema));
     result.push(type);
 
-    tag = schema.names.findIndex((i) => i === "data") + 1;
-    encodedTag = Varint.encode((tag << 3) + WireType.VarLength);
     const size = Varint.encode(data.byteLength);
-    result.push(encodedTag);
+    result.push(encodeTag("data", schema));
     result.push(size);
     result.push(data);
 
-    tag = schema.names.findIndex((i) => i === "filesize") + 1;
-    encodedTag = Varint.encode((tag << 3) + WireType.Varint);
-    result.push(encodedTag);
+    result.push(encodeTag("filesize", schema));
     result.push(size);
 
     return ethers.utils.concat(result);
   }
 
-  static parse(data: Uint8Array): Promise<Uint8Array> {
+  static parse(data: Uint8Array): Uint8Array {
     const schema: SchemaDefinition = Schemas[SchemaType.UNIXFS];
     const result = ProtoBuf.parse(data, schema);
-
+    // result.filesize = 262144
     if (result.type !== UnixFsType.File) {
       throw new Error("unsupported type");
     }
     if (!result.data) {
-      return Promise.resolve(new Uint8Array([]));
+      return new Uint8Array([]);
     }
     if (result.data.constructor !== Uint8Array) {
       throw new Error("bad Data");
     }
-    return Promise.resolve(result.data);
+    return result.data;
   }
 }
 
@@ -181,16 +223,14 @@ export class ProtoBuf {
       if (hash !== hashFromCID) {
         throw new Error("hash mismatch");
       }
+
       return PBNode.parse(res.body);
     });
   }
 
-  /*
-   * put file ipfs
-   */
-  static put(data: Uint8Array): Promise<any> {
+  IpfsPut(data: Uint8Array, links: Array<PBLink>): Promise<any> {
     const url = `${INFURA_IPFS_URL}/put`;
-    const encoded = PBNode.encode(data);
+    const encoded = PBNode.encode(data, links);
     const multihash = Multihash.encode(encoded);
     const formData = new FormData(encoded);
 
@@ -212,6 +252,31 @@ export class ProtoBuf {
     });
   }
 
+  /*
+   * put file ipfs
+   */
+  async put(data: Uint8Array): Promise<any> {
+    const links: Array<PBLink> = [];
+    let result;
+    let end;
+    let i = 0;
+
+    for (let offset = 0; offset < data.byteLength; offset = end) {
+      end = offset + CHUNK_SIZE;
+      const putResult = await this.IpfsPut(data.slice(offset, end), null);
+      const link = new PBLink(putResult.Key, null, putResult.size);
+      links.push(link);
+    }
+
+    if (links.length > 1) {
+      result = await this.IpfsPut(null, links);
+    } else if (links.length === 1) {
+      result = { Key: links[0].hash, size: links[0].tsize };
+    }
+
+    return result;
+  }
+
   static parse(data: Uint8Array, schema: SchemaDefinition): any {
     let tempResult: { [key: string]: Array<any> } = {};
     let result: { [key: string]: any } = {};
@@ -220,11 +285,13 @@ export class ProtoBuf {
     while (offset < data.length) {
       let varint = Varint.decode(data, offset);
       const v = varint.value;
+
+      const databyte = data.slice(offset, offset + 1);
+
       offset += varint.length;
       const tag = schema.names[(v >>> 3) - 1];
 
       if (!tag) {
-        console.log("data", data, ethers.utils.toUtf8String(data));
         throw new Error("unknown field - " + v);
       }
 
@@ -235,6 +302,7 @@ export class ProtoBuf {
       switch (v & 7) {
         // varint
         case WireType.Varint:
+        case WireType.Fixed64:
           varint = Varint.decode(data, offset);
           tempResult[tag].push(varint.value);
           offset += varint.length;
@@ -249,6 +317,17 @@ export class ProtoBuf {
           }
           offset += varint.length;
 
+/*   --- debug
+          if (tag === "links") {
+            console.log(
+              "tag",
+              tag,
+              databyte,
+              length,
+              data.slice(offset, offset + length)
+            );
+          }
+*/
           tempResult[tag].push(data.slice(offset, offset + length));
           offset += length;
           break;

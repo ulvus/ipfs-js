@@ -10,6 +10,7 @@ export class Ipfs {
 
   // put data in ipfs and returns the multihash
   static put(data: Uint8Array): Promise<string> {
-    return ProtoBuf.put(data);
+    const proto = new ProtoBuf();
+    return proto.put(data);
   }
 }
