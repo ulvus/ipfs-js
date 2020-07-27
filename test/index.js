@@ -35,7 +35,8 @@ describe("IPFS", function () {
       this.timeout(120000);
       // "QmWPyMW2u7J2Zyzut7TcBMT8pG6F2cB4hmZk1vBJFBt1nP" -- 4 byte file
       // "QmXn9N1VCotpykz9s6YKs24miLHSyhMCEXBLPLua6znean" -- 6 byte file
-      const multihash = "QmWPyMW2u7J2Zyzut7TcBMT8pG6F2cB4hmZk1vBJFBt1nP";
+      //const multihash = "QmQAsdPwfERkwHZ11Bz6cL85o6VU5cPThh4HPJXR2mDL1r";
+      const multihash = "QmVzJ2cGEtQxn9ZK4VZYbUHib8gqvMGBzr3DixkGdgELKe";
       const data = await Ipfs.get(multihash);
       //console.log("data", data);
       assert.ok(data !== null, "failed to get from ipfs");
@@ -85,8 +86,10 @@ describe("IPFS", function () {
     it("large data", async function () {
       this.timeout(120000);
 
-      const data = Buffer.from("abcd");
+      const length = 2 ** 18 + 100;
+      const data = ethers.utils.randomBytes(length);
       const cid = await Ipfs.put(data);
+      console.log("put succeeded", cid);
 
       const savedData = await Ipfs.get(cid.Key);
       assert.ok(savedData !== null, "failed to get from ipfs");
